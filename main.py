@@ -11,25 +11,59 @@ focus on improving the rendering with numpy
 color using matplotlib colormaps
 then after that's done add the main frame controls and input processing
 
-add QThread Renderer
+add QThread Renderer (implement threading for fractal rendering logic)
 
 after that add animations and mouse interactions which are can also be toggled in main frame
 """
 
 class MainFrame(QWidget):
-    def __init__(self, switch_callback):
+    def __init__(self, switch_callback, fractal: Fract):
         super().__init__()
         layout = QVBoxLayout()
         self.setLayout(layout)
 
+        self.switch_callback = switch_callback
+
+        self.fract = fractal
+
+        # test
+        btn_iter = QPushButton("Iter")
+        layout.addWidget(btn_iter)
+        btn_iter.clicked.connect(self.increase_iter)
+        #
+
         start_btn = QPushButton("Start Fractal")
+        start_btn.setStyleSheet("""
+    QPushButton {
+        background-color: lightblue;
+        border-radius: 8px;
+        padding: 6px;
+    }
+    QPushButton:hover {
+        background-color: yellow;
+    }
+""")
         layout.addWidget(start_btn)
 
+        self.loading_text = QLabel("")
+        layout.addWidget(self.loading_text)
+
+        # TODO: process events is not going to be needed once render thread is implemented
+        # here in the lambda there's an expression with functions returning None
+        # the or operator ensures each expression runs in sequence, return value doesn't matter
+        start_btn.clicked.connect(lambda: (self.loading_text.setText("Rendering...") or QApplication.processEvents()))
         # when clicked, switch to fractal view
         start_btn.clicked.connect(switch_callback)
 
+    def increase_iter(self):
+        if self.fract.ITERATIONS <= 0:
+            return
+        
+        self.fract.ITERATIONS -= 10
+        print("Iterations:", self.fract.ITERATIONS)
+
 class FractalFrame(QWidget):
-    def __init__(self, switch_callback, width, height):
+    def __init__(self, switch_callback, fractal: Fract, width, height):
         super().__init__()
         layout = QVBoxLayout()
         layout.setContentsMargins(0,0,0,0)
@@ -38,9 +72,12 @@ class FractalFrame(QWidget):
 
         self.w, self.h = width, height
         self.rendering = True # TODO: add actual functionality to this later
-        self.fract = Fract()
 
-        self.label = QLabel("Fractal rendering area here")
+        self.fract = fractal
+        self.fract.zoom_mode = False
+        self.fract.const_cR, self.fract.const_cI = 0.355, 0.405 # this one is in the Mandelbrot Set
+
+        self.label = QLabel()
         layout.addWidget(self.label)
 
         # ESC key will trigger going back
@@ -72,7 +109,7 @@ class FractalFrame(QWidget):
 
         for x in range(self.w):
             for y in range(self.h):
-                #qimg.setPixelColor(x, y, mandelbrot(x, y, self.w, self.h))
+                qimg.setPixelColor(x, y, self.fract.mandelbrot(x, y, self.w, self.h))
                 pass
         
         pixmap = QPixmap.fromImage(qimg)
@@ -85,8 +122,6 @@ class FractalFrame(QWidget):
         qimg = QImage(self.w, self.h, QImage.Format.Format_RGB32)
         qimg.fill(QColor("black"))
 
-        self.fract.zoom_mode = False
-        self.fract.const_cR, self.fract.const_cI = 0.355, 0.405 # this one is in the Mandelbrot Set
         for x in range(self.w):
             for y in range(self.h):
                 qimg.setPixelColor(x, y, self.fract.julia(x, y, self.w, self.h, self.fract.const_cR, self.fract.const_cI))
@@ -115,13 +150,15 @@ class UI_Win(QMainWindow):
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.main_frame = MainFrame(self.show_fract)
-        self.fract_frame = FractalFrame(self.show_main, self.w, self.h)
+        self.fract = Fract()
+
+        self.main_frame = MainFrame(self.show_fract, self.fract)
+        self.fract_frame = FractalFrame(self.show_main, self.fract, self.w, self.h)
 
         self.stack.addWidget(self.main_frame) # idx 0
         self.stack.addWidget(self.fract_frame) # idx 1
 
-        self.stack.setCurrentIndex(1) # mainframe
+        self.stack.setCurrentIndex(0) # mainframe 0, render 1
 
         self.setGeometry(950, 500, 600, 600)
         self.setWindowTitle("Fractal Simulation")
@@ -137,7 +174,10 @@ class UI_Win(QMainWindow):
 
     def show_fract(self):
         self.stack.setCurrentIndex(1)
+        self.fract_frame.drawJulia()
+        self.fract_frame.update()
     def show_main(self):
+        self.main_frame.loading_text.setText("")
         self.stack.setCurrentIndex(0)
 
 """
