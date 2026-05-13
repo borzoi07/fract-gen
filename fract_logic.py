@@ -5,6 +5,7 @@ class Fract():
         self.ITERATIONS = 50
         self.zoom_factor = 0.95
         self.zoom_mode = True
+        self.mirror_horizontally = False
 
         # TODO: later will accept mouse input coords
         self.center_x, self.center_y = -0.75, 0.1
@@ -13,11 +14,17 @@ class Fract():
         self.x_min, self.x_max = -2.0, 1.0
         self.y_min, self.y_max = -1.5, 1.5
 
+        self.const_cR, self.const_cI = 0.355, 0.405 # this one is in the Mandelbrot Set
+
 
     def map_pixel(self, x, y, width, height):
         # linear scaling formula
-        real = self.x_min + (x / width) * (self.x_max - self.x_min)
-        imag = self.y_min + (y / height) * (self.y_max - self.y_min)
+        if self.mirror_horizontally:
+            real = self.x_min + ((width - x) / width) * (self.x_max - self.x_min)
+            imag = self.y_min + (y / height) * (self.y_max - self.y_min)
+        else:
+            real = self.x_min + (x / width) * (self.x_max - self.x_min)
+            imag = self.y_min + (y / height) * (self.y_max - self.y_min)
 
         return complex(real, imag)
     
