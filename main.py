@@ -1,10 +1,11 @@
 import sys
+import os
 from numba import njit, prange
 import numpy as np
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QFrame, QWidget, QVBoxLayout, QGridLayout, QStackedWidget, QSizePolicy, QSpacerItem
-from PyQt6.QtGui import QImage, QPixmap, QColor, QKeySequence, QShortcut
+from PyQt6.QtGui import QImage, QPixmap, QColor, QKeySequence, QShortcut, QGuiApplication, QShowEvent
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from fract import Fract
+from fract import Fract, Renderer, arr_to_qimage
 
 # 13/05/2026 TODO #
 """
@@ -12,7 +13,7 @@ focus on improving the rendering with numpy and numba
 color using matplotlib colormaps
 then after that's done add the main frame controls and input processing
 
-add QThread Renderer (implement threading for fractal rendering logic)
+add QThread Renderer (implement threading for fractal rendering logic) DONE
 
 after that add animations and mouse interactions which are can also be toggled in main frame
 
@@ -60,14 +61,14 @@ class MainFrame(QWidget):
         start_btn.setFixedSize(120, 40)
         layout.addWidget(start_btn, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.loading_text = QLabel("")
-        self.loading_text.setStyleSheet("color: white; ")
-        layout.addWidget(self.loading_text, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        #self.loading_text = QLabel("")
+        #self.loading_text.setStyleSheet("color: white; ")
+        #layout.addWidget(self.loading_text, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # TODO: process events is not going to be needed once render thread is implemented
         # here in the lambda there's an expression with functions returning None
         # the or operator ensures each expression runs in sequence, return value doesn't matter
-        start_btn.clicked.connect(lambda: (self.loading_text.setText("Rendering...") or QApplication.processEvents()))
+        #start_btn.clicked.connect(lambda: (self.loading_text.setText("Rendering...") or QApplication.processEvents()))
 
         # when clicked, switch to fractal view
         start_btn.clicked.connect(switch_callback)
@@ -80,28 +81,158 @@ class MainFrame(QWidget):
         print("Iterations:", self.fract.ITERATIONS)
 
 class FractalFrame(QWidget):
-    def __init__(self, switch_callback, fractal: Fract, width, height):
+    def __init__(self, switch_callback, fractal: Fract):
         super().__init__()
-        self.w, self.h = width, height
-
         layout = QVBoxLayout()
         layout.setContentsMargins(0,0,0,0)
         layout.setSpacing(0)
-        self.setLayout(layout)
-
-        self.rendering = True # TODO: add actual functionality to this later
 
         self.fract = fractal
-        self.fract.zoom_mode = False
-        self.fract.c_const = complex(0.355, 0.405) # this one is in the Mandelbrot Set
 
         self.label = QLabel()
-        self.label.setFixedSize(self.w, self.h)
+        self.label.setFixedSize(self.fract.WIDTH, self.fract.HEIGHT)
         layout.addWidget(self.label)
+
+        self.setLayout(layout)
+
+        self.x_min = self.fract.x_min_init
+        self.x_max = self.fract.x_max_init
+        self.y_min = self.fract.y_min_init
+        self.y_max = self.fract.y_max_init
+        self.target_real = (self.x_min + self.x_max) / 2.0
+        self.target_imag = (self.y_min + self.y_max) / 2.0
+
+        self.frame_idx = 0
+        self.save_frames = self.fract.SAVE_FRAMES
+        self.output_dir = "frames"
+        if self.save_frames:
+            os.makedirs(self.output_dir, exist_ok=True)
+
+        self.interval_anim = self.fract.INTERVAL_ANIM
+        if self.interval_anim:
+            self.angle = 0.0   # start angle
+            self.angle_step = 0.02  # radians per frame (~314 frames for full cycle)
+
+        # thread
+        self.worker = Renderer(self.fract)
+        self.worker.frame_ready.connect(self.on_frame_ready)
+        self.worker.start()
+
+        # animation timer
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(self.fract.F_DELAY)
 
         # ESC key will trigger going back
         self.esc_shortcut = QShortcut(QKeySequence("Escape"), self)
         self.esc_shortcut.activated.connect(switch_callback)
+
+        self.request_render()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            px = float(pos.x())
+            py = float(pos.y())
+            px = max(0.0, min(px, self.fract.WIDTH - 1))
+            py = max(0.0, min(py, self.fract.HEIGHT - 1))
+            real = self.x_min + (px / (self.fract.WIDTH - 1)) * (self.x_max - self.x_min)
+            imag = self.y_min + (py / (self.fract.HEIGHT - 1)) * (self.y_max - self.y_min)
+            self.target_real = real
+            self.target_imag = imag
+            event.accept()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.x_min = self.fract.x_min_init
+            self.x_max = self.fract.x_max_init
+            self.y_min = self.fract.y_min_init
+            self.y_max = self.fract.y_max_init
+            self.target_real = (self.x_min + self.x_max) / 2.0
+            self.target_imag = (self.y_min + self.y_max) / 2.0
+            self.request_render()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def update_frame(self):
+        if self.interval_anim:
+            # c = 0.7885 * e^(i a)
+            self.angle += self.angle_step
+            if self.angle > 2 * np.pi:
+                self.angle -= 2 * np.pi
+
+            c_real = 0.7885 * np.cos(self.angle)
+            c_imag = 0.7885 * np.sin(self.angle)
+
+            # push parameters to worker and request render
+            self.fract.c_const = complex(c_real, c_imag)
+            self.worker.request_render = True
+            return
+
+        if not self.fract.ZOOM:
+            return
+        # pan towards cursor
+        cur_center_real = (self.x_min + self.x_max) / 2.0
+        cur_center_imag = (self.y_min + self.y_max) / 2.0
+        new_center_real = cur_center_real + (self.target_real - cur_center_real) * self.fract.PAN_LERP
+        new_center_imag = cur_center_imag + (self.target_imag - cur_center_imag) * self.fract.PAN_LERP
+
+        x_range = (self.x_max - self.x_min) * self.fract.ZOOM_FACTOR
+        y_range = (self.y_max - self.y_min) * self.fract.ZOOM_FACTOR
+
+        self.x_min = new_center_real - x_range / 2.0
+        self.x_max = new_center_real + x_range / 2.0
+        self.y_min = new_center_imag - y_range / 2.0
+        self.y_max = new_center_imag + y_range / 2.0
+
+        if x_range < 1e-12 or y_range < 1e-12:
+            self.x_min = self.fract.x_min_init
+            self.x_max = self.fract.x_max_init
+            self.y_min = self.fract.y_min_init
+            self.y_max = self.fract.y_max_init
+            self.target_real = (self.x_min + self.x_max) / 2.0
+            self.target_imag = (self.y_min + self.y_max) / 2.0
+
+        # push parameters to worker and request render
+        self.fract.x_min = self.x_min
+        self.fract.x_max = self.x_max
+        self.fract.y_min = self.y_min
+        self.fract.y_max = self.y_max
+        self.worker.request_render = True
+
+    def request_render(self):
+        self.worker.request_render = True
+
+    def on_frame_ready(self, rgb_array):
+        # rgb_array is HxWx3 uint8 numpy array
+        qimg = arr_to_qimage(rgb_array)
+        pixmap = QPixmap.fromImage(qimg)
+        self.label.setPixmap(pixmap)
+
+        if self.save_frames:
+            filename = os.path.join(self.output_dir, f"frame_{self.frame_index:04d}.png")
+            qimg.save(filename)
+            self.frame_index += 1
+
+    def closeEvent(self, event):
+        self.worker.stop()
+        super().closeEvent(event)
+
+    def reset(self):
+        # stop anim
+        self.timer.stop()
+        self.worker.request_render = False
+
+        self.x_min = self.fract.x_min_init
+        self.x_max = self.fract.x_max_init
+        self.y_min = self.fract.y_min_init
+        self.y_max = self.fract.y_max_init
+        self.target_real = (self.x_min + self.x_max) / 2.0
+        self.target_imag = (self.y_min + self.y_max) / 2.0
+
+        # clear display
+        self.label.clear()
+        self.label.repaint()
+        self.frame_index = 0
 
 
     def _drawTestNumpy(self):
@@ -118,34 +249,6 @@ class FractalFrame(QWidget):
 
         self.label.setPixmap(QPixmap.fromImage(qimg))
 
-    def drawMandelbrot(self):
-        # TODO: Figure out a better way to color this with matplotlib
-        # TODO: Add Looping Animation
-        # TODO: Add Mouse Interactions With Animation
-        qimg = QImage(self.w, self.h, QImage.Format.Format_RGB32)
-        qimg.fill(QColor("black"))
-
-        for x in range(self.w):
-            for y in range(self.h):
-                qimg.setPixelColor(x, y, self.fract.mandelbrot(x, y, self.w, self.h))
-                pass
-        
-        pixmap = QPixmap.fromImage(qimg)
-        self.label.setPixmap(pixmap)
-
-    def drawJulia(self):
-        qimg = QImage(self.w, self.h, QImage.Format.Format_RGB32)
-        qimg.fill(QColor("black"))
-
-        for x in range(self.w):
-            for y in range(self.h):
-                qimg.setPixelColor(x, y, self.fract.julia(x, y, self.w, self.h, self.fract.c_const))
-
-        pixmap = QPixmap.fromImage(qimg)
-        self.label.setPixmap(pixmap)
-
-        self.fract.zoom()
-
 
 class UI_Win(QMainWindow):
     def __init__(self):
@@ -158,10 +261,10 @@ class UI_Win(QMainWindow):
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.fract = Fract()
+        self.fract = Fract(self.w, self.h)
 
         self.main_frame = MainFrame(self.show_fract, self.fract)
-        self.fract_frame = FractalFrame(self.show_main, self.fract, self.w, self.h)
+        self.fract_frame = FractalFrame(self.show_main, self.fract)
 
         self.stack.addWidget(self.main_frame) # idx 0
         self.stack.addWidget(self.fract_frame) # idx 1
@@ -169,11 +272,15 @@ class UI_Win(QMainWindow):
         self.stack.setCurrentIndex(0) # mainframe 0, render 1
 
     def show_fract(self):
-        self.stack.setCurrentIndex(1)
-        self.fract_frame.drawJulia()
         self.fract_frame.update()
+        self.fract_frame.timer.start(self.fract.F_DELAY)
+        self.fract_frame.request_render()
+
+        self.stack.setCurrentIndex(1)
+
     def show_main(self):
-        self.main_frame.loading_text.setText("")
+        self.fract_frame.reset()
+
         self.stack.setCurrentIndex(0)
 
 def main():

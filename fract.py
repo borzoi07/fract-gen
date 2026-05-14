@@ -1,45 +1,55 @@
 from PyQt6.QtGui import QColor, QImage, QPixmap
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QThread, pyqtSignal
 from matplotlib import colormaps
 import numpy as np
 from numba import njit, prange
 
 def map_colors(arr, colormap='inferno'):
-    ...
+    max_val = arr.max()
+    # normalize to [0, 1]
+    if max_val == 0:
+        norm = arr.astype(np.float32)
+    else:
+        norm = arr.astype(np.float32) / float(max_val)
+    # retrieve a func from dict that maps values from [0, 1] to colors
+    cmap = colormaps.get(colormap)
+    colored = cmap(norm)[:, :, :3] # idk what this does but it works
+    rgb_array = np.uint8(colored * 255)
+    return rgb_array
 
-def arr_to_qimage(arr):
-    ...
+def arr_to_qimage(arr) -> QImage:
+    height, width, channels = arr.shape
+    array_c = np.ascontiguousarray(arr, dtype=np.uint8)
+    # each pixel has 3 channels (rgb) so one row of width pixels needs width × 3 bytes
+    qimg = QImage(array_c.data, width, height, 3 * width, QImage.Format.Format_RGB888) # 3 channel format each 8 bits
+    return qimg.copy()
 
 class Fract():
-    ITERATIONS = 50
-    ZOOM_FACTOR = 0.95
-    ZOOM = False
+    ITERATIONS = 200
+    ZOOM_FACTOR = 0.988
+    ZOOM = True
     PAN_LERP = 0.12
     FPS = 30
     F_DELAY = int(1000 / FPS)
     MIRROR_H = False
+    INTERVAL_ANIM = False
+    SAVE_FRAMES = False
 
     x_min_init, x_max_init = -2.0, 2.0
     y_min_init, y_max_init = -1.5, 1.5
 
-    def __init__(self):
-        """
-        self.ITERATIONS = 50
-        self.zoom_factor = 0.95
-        self.zoom_mode = True
-        self.mirror_horizontally = False
-        """
-    
-        # TODO: later will accept mouse input coords
-        self.center_x, self.center_y = -0.75, 0.1
+    is_mandelbrot = False
 
+    def __init__(self, w, h):
+        self.WIDTH, self.HEIGHT = w, h
+    
         # complex plane window
         self.x_min, self.x_max = Fract.x_min_init, Fract.x_max_init
         self.y_min, self.y_max = Fract.y_min_init, Fract.y_max_init
 
         self.c_const = complex(0.355, 0.405) # this one is in the Mandelbrot Set
 
-
+    # TODO: REMOVE DEPRECATED
     def map_pixel(self, x, y, width, height):
         # linear scaling formula
         # width and height minus 1 to include the edges of the max boundary [x_min, x_max] 
@@ -52,28 +62,48 @@ class Fract():
 
         return real, imag # complex(real, imag)
 
-    def mandelbrot(self, x, y, width, height):
-        cR, cI = self.map_pixel(x, y, width, height)
-        c = complex(cR, cI)
-        z = 0
-        escape_val = 2
-
-        iteration = 0
-        while abs(z) <= escape_val and iteration < self.ITERATIONS:
-            z = z*z + c
-            iteration += 1
-
-        if iteration == self.ITERATIONS:
-            color = QColor("black")
-        else:
-            color = QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
-
-        return color
     
+    # TODO: Implement changes
+    #def mandelbrot(self, x_min, x_max, y_min, y_max, width, height, iterations):
+    #    ...
+    
+    @staticmethod
+    @njit(parallel=True, fastmath=True)
+    def julia(x_min, x_max, y_min, y_max, width, height, iterations, c_real, c_imag, mirror_h):
+        arr = np.empty((height, width), dtype=np.int32)
+        cR, cI = c_real, c_imag
+        # linear scaling formula
+        # width and height minus 1 to include the edges of the max boundary [x_min, x_max]
+        dx = (x_max - x_min) / (width - 1)
+        dy = (y_max - y_min) / (height - 1)
+
+        # run only the row level on separate threads
+        # y row can be computed independently so there won't be race conditions
+        for y in prange(height):
+            imag = y_min + y * dy
+            for x in range(width):
+                real = x_min + (width - x if mirror_h else x) * dx
+                zr = real
+                zi = imag
+                iteration = 0
+                for itr in range(iterations):
+                    # z = z*z + c but with explicit arithmetic instead of complex()
+                    zr2 = zr * zr - zi * zi + cR
+                    zi = 2.0 * zr * zi + cI
+                    zr = zr2
+                    if zr * zr + zi * zi > 4.0: # escape value
+                        iteration = itr
+                        break
+                arr[y, x] = iteration
+        
+        return arr
+    
+        # Coloring method without matplotlib colormaps
+        # QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
+        """
     def julia(self, x, y, width, height, c):
         cR, cI = c.real, c.imag
         zr, zi = self.map_pixel(x, y, width, height)
-        #escape_val = 2
 
         iteration = 0
         for itr in range(self.ITERATIONS):
@@ -94,17 +124,46 @@ class Fract():
     
         # Coloring method without matplotlib colormaps
         # QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
+        """
+
+class Renderer(QThread):
+    frame_ready = pyqtSignal(object)
+
+    def __init__(self, fractal: Fract):
+        super(QThread,self).__init__()
+        
+        self.fract = fractal
+        self.running = True
+        self.request_render = True
+
+    def run(self):
+        # Keep rendering while thread is alive
+        while self.running:
+            if not self.request_render:
+                self.msleep(5)
+                continue
+            # copy parameters locally to avoid race conditions
+            xm, xM = self.fract.x_min, self.fract.x_max
+            ym, yM = self.fract.y_min, self.fract.y_max
+            max_it = self.fract.ITERATIONS
+            cr, ci = self.fract.c_const.real, self.fract.c_const.imag
+            mirror_h = self.fract.MIRROR_H
+
+            if self.fract.is_mandelbrot:
+                array = self.fract.julia(xm, xM, ym, yM, self.fract.WIDTH, self.fract.HEIGHT, max_it, cr, ci)
+            else:
+                array = self.fract.julia(xm, xM, ym, yM, self.fract.WIDTH, self.fract.HEIGHT, max_it, cr, ci, mirror_h)
+            rgb = map_colors(array, colormap='inferno')
+
+            self.frame_ready.emit(rgb)
+            self.request_render = False
+
+    def stop(self):
+        self.running = False
+        self.wait()     
 
 
-    def zoom(self):
-        if self.ZOOM:
-            x_range = (self.x_max - self.x_min) * self.ZOOM_FACTOR
-            y_range = (self.y_max - self.y_min) * self.ZOOM_FACTOR
 
-            self.x_min = self.center_x - x_range/2
-            self.x_max = self.center_x + x_range/2
-            self.y_min = self.center_y - y_range/2
-            self.y_max = self.center_y + y_range/2
 
 
 
