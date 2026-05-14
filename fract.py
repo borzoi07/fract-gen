@@ -28,7 +28,7 @@ class Fract():
     ITERATIONS = 200
     ZOOM_FACTOR = 0.988
     ZOOM = True
-    PAN_LERP = 0.12
+    PAN_LERP = 0.05 # default 0.12
     FPS = 30
     F_DELAY = int(1000 / FPS)
     MIRROR_H = False
@@ -48,24 +48,37 @@ class Fract():
         self.y_min, self.y_max = Fract.y_min_init, Fract.y_max_init
 
         self.c_const = complex(0.355, 0.405) # this one is in the Mandelbrot Set
-
-    # TODO: REMOVE DEPRECATED
-    def map_pixel(self, x, y, width, height):
-        # linear scaling formula
-        # width and height minus 1 to include the edges of the max boundary [x_min, x_max] 
-        if self.MIRROR_H:
-            real = self.x_min + ((width - x) / (width - 1)) * (self.x_max - self.x_min)
-            imag = self.y_min + (y / (height - 1)) * (self.y_max - self.y_min)
-        else:
-            real = self.x_min + (x / (width - 1)) * (self.x_max - self.x_min)
-            imag = self.y_min + (y / (height - 1)) * (self.y_max - self.y_min)
-
-        return real, imag # complex(real, imag)
-
     
-    # TODO: Implement changes
-    #def mandelbrot(self, x_min, x_max, y_min, y_max, width, height, iterations):
-    #    ...
+    @staticmethod
+    @njit(parallel=True, fastmath=True)
+    def mandelbrot(x_min, x_max, y_min, y_max, width, height, iterations, mirror_h):
+        arr = np.empty((height, width), dtype=np.int32)
+        # linear scaling formula
+        # width and height minus 1 to include the edges of the max boundary [x_min, x_max]
+        dx = (x_max - x_min) / (width - 1)
+        dy = (y_max - y_min) / (height - 1)
+
+        # run only the row level on separate threads
+        # y row can be computed independently so there won't be race conditions
+        for y in prange(height):
+            imag = y_min + y * dy
+            for x in range(width):
+                real = x_min + (width - x if mirror_h else x) * dx
+                cR = real
+                cI = imag
+                zr, zi = 0, 0 # declaring this outside prange will result in reduction error
+                iteration = 0
+                for itr in range(iterations):
+                    # z = z*z + c but with explicit arithmetic instead of complex()
+                    zr2 = zr * zr - zi * zi + cR
+                    zi = 2.0 * zr * zi + cI
+                    zr = zr2
+                    if zr * zr + zi * zi > 4.0: # escape value
+                        iteration = itr
+                        break
+                arr[y, x] = iteration
+        
+        return arr
     
     @staticmethod
     @njit(parallel=True, fastmath=True)
@@ -100,31 +113,6 @@ class Fract():
     
         # Coloring method without matplotlib colormaps
         # QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
-        """
-    def julia(self, x, y, width, height, c):
-        cR, cI = c.real, c.imag
-        zr, zi = self.map_pixel(x, y, width, height)
-
-        iteration = 0
-        for itr in range(self.ITERATIONS):
-            # z = z*z + c but with explicit arithmetic instead of complex()
-            zr2 = zr * zr - zi * zi + cR
-            zi = 2.0 * zr * zi + cI
-            zr = zr2
-            if zr * zr + zi * zi > 4.0: # escape value
-                iteration = itr
-                break
-
-        if iteration == self.ITERATIONS:
-            color = QColor("black")
-        else:
-            color = QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
-
-        return color
-    
-        # Coloring method without matplotlib colormaps
-        # QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
-        """
 
 class Renderer(QThread):
     frame_ready = pyqtSignal(object)
@@ -150,9 +138,10 @@ class Renderer(QThread):
             mirror_h = self.fract.MIRROR_H
 
             if self.fract.is_mandelbrot:
-                array = self.fract.julia(xm, xM, ym, yM, self.fract.WIDTH, self.fract.HEIGHT, max_it, cr, ci)
+                array = self.fract.mandelbrot(xm, xM, ym, yM, self.fract.WIDTH, self.fract.HEIGHT, max_it, mirror_h)
             else:
                 array = self.fract.julia(xm, xM, ym, yM, self.fract.WIDTH, self.fract.HEIGHT, max_it, cr, ci, mirror_h)
+
             rgb = map_colors(array, colormap='inferno')
 
             self.frame_ready.emit(rgb)

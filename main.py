@@ -2,29 +2,22 @@ import sys
 import os
 from numba import njit, prange
 import numpy as np
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QFrame, QWidget, QVBoxLayout, QGridLayout, QStackedWidget, QSizePolicy, QSpacerItem
+from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QCheckBox, QComboBox, QLineEdit, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QSizePolicy, QSpacerItem
 from PyQt6.QtGui import QImage, QPixmap, QColor, QKeySequence, QShortcut, QGuiApplication, QShowEvent
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QTimer
 from fract import Fract, Renderer, arr_to_qimage
 
-# 13/05/2026 TODO #
+# 14/05/2026 TODO #
 """
-focus on improving the rendering with numpy and numba
-color using matplotlib colormaps
-then after that's done add the main frame controls and input processing
-
-add QThread Renderer (implement threading for fractal rendering logic) DONE
-
-after that add animations and mouse interactions which are can also be toggled in main frame
-
-Implement Julia sets animation (no zoom animation) for:
-z*z + 0.7885*e^ia where a ranges from 0 to 2pi
-
+- ADD PROPER UI ELEMENT PLACEMENTS
+- ADD COLORMAP CHOICE combobox
+- ADD ITERATION CHOICE input
+- ADD FPS CHOICE input
 https://en.wikipedia.org/wiki/Julia_set
 """
 
 class MainFrame(QWidget):
-    def __init__(self, switch_callback, fractal: Fract):
+    def __init__(self, switch_callback, fractal: Fract, fract_frame):
         super().__init__()
         layout = QGridLayout()
         layout.setContentsMargins(0,0,0,0)
@@ -39,11 +32,12 @@ class MainFrame(QWidget):
         self.switch_callback = switch_callback
 
         self.fract = fractal
+        self.fract_frame = fract_frame
 
-        # test
+        # test # TODO: REMOVE WHEN DONE TESTING
         btn_iter = QPushButton("Iter")
-        layout.addWidget(btn_iter)
-        btn_iter.clicked.connect(self.increase_iter)
+        #layout.addWidget(btn_iter)
+        #btn_iter.clicked.connect(self.increase_iter)
         #
 
         start_btn = QPushButton("Start Rendering")
@@ -59,12 +53,84 @@ class MainFrame(QWidget):
     }
 """)
         start_btn.setFixedSize(120, 40)
-        layout.addWidget(start_btn, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(start_btn, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+
+        checkboxes = QVBoxLayout()
+        self.disable_zoom = QCheckBox('Disable Zoom?')
+        self.enable_disk_save = QCheckBox('Save frames to Disk?')
+        self.enable_h_mirror = QCheckBox('Mirror fractal horizontally?')
+        for c in (self.disable_zoom, self.enable_disk_save, self.enable_h_mirror):
+            c.setStyleSheet("QCheckBox { color: white; padding: 6px; }  QCheckBox::indicator:hover { background-color: #97978f; border: 1px #deded1; } QCheckBox::indicator:checked { background-color: green; border: 1px solid lightgreen; }")
+            checkboxes.addWidget(c)
+        layout.addLayout(checkboxes, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
+
+        self.disable_zoom.stateChanged.connect(self.on_zoom_change)
+        self.enable_disk_save.stateChanged.connect(self.on_save_change)
+        self.enable_h_mirror.stateChanged.connect(self.on_mirror_change)
+
+
+        comboboxes = QVBoxLayout()
+        comboboxes.setContentsMargins(0, 3, 0, 3)
+        self.fract_type = QComboBox()
+        self.fract_type.addItems(['Mandelbrot Set', 'Julia Set'])
+        self.fract_type.currentTextChanged.connect(self.on_fract_type_change)      
+
+        self.julia_sets = QComboBox()
+        self.julia_sets.addItems(['Dendrite', 'San Marco Dragon', "Douady's Rabbit", 'Siegel Disk', 'ANIMATION: [0, 2pi]', 'SET: Custom Constant'])
+
+        input_l = QHBoxLayout()
+        self.r_input = QLineEdit()
+        self.i_input = QLineEdit()
+        self.r_input.setPlaceholderText("real part")
+        self.i_input.setPlaceholderText("imag part")
+        self.r_input.setFixedSize(90 ,35)
+        self.i_input.setFixedSize(90 ,35)
+        for i in (self.r_input, self.i_input):
+            i.setStyleSheet("color: white; background-color: #333; padding: 10px;")
+        self.r_input.returnPressed.connect(self.apply_custom_c)
+        self.i_input.returnPressed.connect(self.apply_custom_c)
+        input_l.addWidget(self.r_input)
+        input_l.addWidget(self.i_input)
+
+        self.set_info = QLabel("")
+        self.set_info.setStyleSheet("color: white; padding: 100px")
+        self.julia_sets.currentTextChanged.connect(self.update_set_info)
+
+        comboboxes.addWidget(self.set_info)
+        comboboxes.addWidget(self.fract_type)
+        comboboxes.addWidget(self.julia_sets)
+        comboboxes.addLayout(input_l)
+
+        self.r_input.hide()
+        self.i_input.hide()
+        self.julia_sets.hide()
+        self.set_info.hide()
+
+        layout.addLayout(comboboxes, 1, 0, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        if self.fract_type.currentText() == "Julia Set":
+            self.fract.is_mandelbrot = False
+            self.julia_sets.show()
+            self.set_info.show()
+            self.fract_frame.reset()
+        else:
+            self.fract.is_mandelbrot = True
+            self.julia_sets.hide()
+            self.set_info.hide()
+            self.r_input.hide()
+            self.i_input.hide()
+            self.fract_frame.reset()          
+
+
+        controls_text = QLabel("Left-Click to Zoom\nRight-Click to Reset View\nESC to return to this menu")
+        controls_text.setStyleSheet("color: white; padding: 6px; ")
+        layout.addWidget(controls_text, 4, 0, alignment=Qt.AlignmentFlag.AlignBottom)
+
 
         #self.loading_text = QLabel("")
         #self.loading_text.setStyleSheet("color: white; ")
         #layout.addWidget(self.loading_text, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
-
         # TODO: process events is not going to be needed once render thread is implemented
         # here in the lambda there's an expression with functions returning None
         # the or operator ensures each expression runs in sequence, return value doesn't matter
@@ -73,12 +139,101 @@ class MainFrame(QWidget):
         # when clicked, switch to fractal view
         start_btn.clicked.connect(switch_callback)
 
+    # TODO: DEPRECATED REMOVE LATER
     def increase_iter(self):
         if self.fract.ITERATIONS <= 0:
             return
         
         self.fract.ITERATIONS -= 10
         print("Iterations:", self.fract.ITERATIONS)
+
+    def on_fract_type_change(self, text):
+        if text == "Julia Set":
+            self.fract.is_mandelbrot = False
+            self.julia_sets.show()
+            self.set_info.show()
+            self.fract_frame.reset()
+        else:
+            self.fract.is_mandelbrot = True
+            self.julia_sets.hide()
+            self.set_info.hide()
+            self.r_input.hide()
+            self.i_input.hide()
+            self.fract_frame.reset()
+
+    def update_set_info(self, text):
+        match text:
+            case 'Dendrite':
+                self.set_info.setText("C = 0 + 1j")
+                self.fract.c_const = complex(0.0, 1.0)
+                self.fract_frame.reset()
+            case 'San Marco Dragon':
+                self.set_info.setText("C = -0.75 + 0j\nEdge of the Mandelbrot set")
+                self.fract.c_const = complex(-0.75, 0)
+                self.fract_frame.reset()
+            case "Douady's Rabbit":
+                self.set_info.setText("C = -0.123, 0.745j")
+                self.fract.c_const = complex(-0.123, 0.745)
+                self.fract_frame.reset()
+            case 'Siegel Disk':
+                self.set_info.setText("-0.39054, -0.58679j")
+                self.fract.c_const = complex(-0.39054, -0.58679)
+                self.fract_frame.reset()
+            case _:
+                self.set_info.setText("")
+        
+        if text == 'ANIMATION: [0, 2pi]':
+            self.set_info.setText("z^2 + 0.7885*e^(ia)\nWhere a ranges from [0,2pi]")
+            self.fract.INTERVAL_ANIM = True
+            self.fract_frame.reset()
+        else:
+            self.fract.INTERVAL_ANIM = False
+            self.fract_frame.reset()
+
+        if text == 'SET: Custom Constant':
+            self.set_info.setText("Choose a C complex num (only enter an int/float)")
+            self.r_input.show()
+            self.i_input.show()
+        else:
+            self.r_input.hide()
+            self.i_input.hide()
+
+    def apply_custom_c(self):
+        try:
+            real = float(self.r_input.text())
+            imag = float(self.i_input.text())
+            self.fract.c_const = complex(real, imag)
+            self.set_info.setText(f"C = {real} + {imag}j")
+            self.fract_frame.request_render()
+            self.fract_frame.reset()
+        except ValueError:
+            self.set_info.setText("Invalid input")
+
+    def on_zoom_change(self):
+        if self.disable_zoom.isChecked():
+            self.fract.ZOOM = False
+            self.fract_frame.reset()
+        else:
+            self.fract.ZOOM = True
+            self.fract_frame.reset()
+
+    def on_save_change(self):
+        if self.enable_disk_save.isChecked():
+            self.fract.SAVE_FRAMES = True
+            self.fract_frame.reset()
+        else:
+            self.fract.SAVE_FRAMES = False
+            self.fract_frame.reset()
+
+    def on_mirror_change(self):
+        if self.enable_h_mirror.isChecked():
+            self.fract.MIRROR_H = True
+            self.fract_frame.reset()
+        else:
+            self.fract.MIRROR_H = False
+            self.fract_frame.reset()
+
+        
 
 class FractalFrame(QWidget):
     def __init__(self, switch_callback, fractal: Fract):
@@ -103,13 +258,11 @@ class FractalFrame(QWidget):
         self.target_imag = (self.y_min + self.y_max) / 2.0
 
         self.frame_idx = 0
-        self.save_frames = self.fract.SAVE_FRAMES
         self.output_dir = "frames"
-        if self.save_frames:
+        if self.fract.SAVE_FRAMES:
             os.makedirs(self.output_dir, exist_ok=True)
 
-        self.interval_anim = self.fract.INTERVAL_ANIM
-        if self.interval_anim:
+        if self.fract.INTERVAL_ANIM:
             self.angle = 0.0   # start angle
             self.angle_step = 0.02  # radians per frame (~314 frames for full cycle)
 
@@ -121,13 +274,13 @@ class FractalFrame(QWidget):
         # animation timer
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
-        self.timer.start(self.fract.F_DELAY)
+        #self.timer.start(self.fract.F_DELAY)
 
         # ESC key will trigger going back
         self.esc_shortcut = QShortcut(QKeySequence("Escape"), self)
         self.esc_shortcut.activated.connect(switch_callback)
 
-        self.request_render()
+        #self.request_render()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -154,7 +307,7 @@ class FractalFrame(QWidget):
             super().mousePressEvent(event)
 
     def update_frame(self):
-        if self.interval_anim:
+        if self.fract.INTERVAL_ANIM:
             # c = 0.7885 * e^(i a)
             self.angle += self.angle_step
             if self.angle > 2 * np.pi:
@@ -163,7 +316,6 @@ class FractalFrame(QWidget):
             c_real = 0.7885 * np.cos(self.angle)
             c_imag = 0.7885 * np.sin(self.angle)
 
-            # push parameters to worker and request render
             self.fract.c_const = complex(c_real, c_imag)
             self.worker.request_render = True
             return
@@ -192,7 +344,6 @@ class FractalFrame(QWidget):
             self.target_real = (self.x_min + self.x_max) / 2.0
             self.target_imag = (self.y_min + self.y_max) / 2.0
 
-        # push parameters to worker and request render
         self.fract.x_min = self.x_min
         self.fract.x_max = self.x_max
         self.fract.y_min = self.y_min
@@ -208,7 +359,7 @@ class FractalFrame(QWidget):
         pixmap = QPixmap.fromImage(qimg)
         self.label.setPixmap(pixmap)
 
-        if self.save_frames:
+        if self.fract.SAVE_FRAMES:
             filename = os.path.join(self.output_dir, f"frame_{self.frame_index:04d}.png")
             qimg.save(filename)
             self.frame_index += 1
@@ -222,12 +373,23 @@ class FractalFrame(QWidget):
         self.timer.stop()
         self.worker.request_render = False
 
+        self.fract.x_min = self.fract.x_min_init
+        self.fract.x_max = self.fract.x_max_init
+        self.fract.y_min = self.fract.y_min_init
+        self.fract.y_max = self.fract.y_max_init
         self.x_min = self.fract.x_min_init
         self.x_max = self.fract.x_max_init
         self.y_min = self.fract.y_min_init
         self.y_max = self.fract.y_max_init
         self.target_real = (self.x_min + self.x_max) / 2.0
         self.target_imag = (self.y_min + self.y_max) / 2.0
+
+        if self.fract.SAVE_FRAMES:
+            os.makedirs(self.output_dir, exist_ok=True)
+
+        if self.fract.INTERVAL_ANIM:
+            self.angle = 0.0   # start angle
+            self.angle_step = 0.02  # radians per frame (~314 frames for full cycle)
 
         # clear display
         self.label.clear()
@@ -263,8 +425,8 @@ class UI_Win(QMainWindow):
 
         self.fract = Fract(self.w, self.h)
 
-        self.main_frame = MainFrame(self.show_fract, self.fract)
         self.fract_frame = FractalFrame(self.show_main, self.fract)
+        self.main_frame = MainFrame(self.show_fract, self.fract, self.fract_frame)
 
         self.stack.addWidget(self.main_frame) # idx 0
         self.stack.addWidget(self.fract_frame) # idx 1
@@ -272,9 +434,9 @@ class UI_Win(QMainWindow):
         self.stack.setCurrentIndex(0) # mainframe 0, render 1
 
     def show_fract(self):
-        self.fract_frame.update()
         self.fract_frame.timer.start(self.fract.F_DELAY)
         self.fract_frame.request_render()
+        self.fract_frame.update()
 
         self.stack.setCurrentIndex(1)
 
