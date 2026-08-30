@@ -1,20 +1,12 @@
 import sys
 import os
-from numba import njit, prange
+from matplotlib import colormaps
 import numpy as np
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QCheckBox, QComboBox, QLineEdit, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QStackedWidget, QSizePolicy, QSpacerItem
 from PyQt6.QtGui import QImage, QPixmap, QColor, QKeySequence, QShortcut, QGuiApplication, QShowEvent
 from PyQt6.QtCore import Qt, QTimer
 from fract import Fract, Renderer, arr_to_qimage
 
-# 14/05/2026 TODO #
-"""
-- ADD PROPER UI ELEMENT PLACEMENTS
-- ADD COLORMAP CHOICE combobox
-- ADD ITERATION CHOICE input
-- ADD FPS CHOICE input
-https://en.wikipedia.org/wiki/Julia_set
-"""
 
 class MainFrame(QWidget):
     def __init__(self, switch_callback, fractal: Fract, fract_frame):
@@ -34,80 +26,71 @@ class MainFrame(QWidget):
         self.fract = fractal
         self.fract_frame = fract_frame
 
-        # test # TODO: REMOVE WHEN DONE TESTING
-        btn_iter = QPushButton("Iter")
-        #layout.addWidget(btn_iter)
-        #btn_iter.clicked.connect(self.increase_iter)
-        #
-
-        start_btn = QPushButton("Start Rendering")
-        start_btn.setStyleSheet("""
-    QPushButton {
-        background-color: #deded1;
-        border-radius: 8px;
-        padding: 6px;
-        size: 
-    }
-    QPushButton:hover {
-        background-color: #97978f;
-    }
-""")
-        start_btn.setFixedSize(120, 40)
-        layout.addWidget(start_btn, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
-        
 
         checkboxes = QVBoxLayout()
         self.disable_zoom = QCheckBox('Disable Zoom?')
         self.enable_disk_save = QCheckBox('Save frames to Disk?')
         self.enable_h_mirror = QCheckBox('Mirror fractal horizontally?')
         for c in (self.disable_zoom, self.enable_disk_save, self.enable_h_mirror):
-            c.setStyleSheet("QCheckBox { color: white; padding: 6px; }  QCheckBox::indicator:hover { background-color: #97978f; border: 1px #deded1; } QCheckBox::indicator:checked { background-color: green; border: 1px solid lightgreen; }")
+            c.setStyleSheet("QCheckBox { color: white; padding: 1px; }  QCheckBox::indicator:hover { background-color: #97978f; border: 1px #deded1; } QCheckBox::indicator:checked { background-color: green; border: 1px solid lightgreen; }")
             checkboxes.addWidget(c)
-        layout.addLayout(checkboxes, 0, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        cb_widgets = QWidget()
+        cb_widgets.setLayout(checkboxes)
+        layout.addWidget(cb_widgets, 0, 0, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         self.disable_zoom.stateChanged.connect(self.on_zoom_change)
         self.enable_disk_save.stateChanged.connect(self.on_save_change)
         self.enable_h_mirror.stateChanged.connect(self.on_mirror_change)
 
-
-        comboboxes = QVBoxLayout()
-        comboboxes.setContentsMargins(0, 3, 0, 3)
+        # comboboxes
+        comboboxes = QVBoxLayout()        
         self.fract_type = QComboBox()
+        self.fract_type.setFixedSize(185, 20)
         self.fract_type.addItems(['Mandelbrot Set', 'Julia Set'])
         self.fract_type.currentTextChanged.connect(self.on_fract_type_change)      
 
         self.julia_sets = QComboBox()
+        self.julia_sets.setFixedSize(185, 20)
         self.julia_sets.addItems(['Dendrite', 'San Marco Dragon', "Douady's Rabbit", 'Siegel Disk', 'ANIMATION: [0, 2pi]', 'SET: Custom Constant'])
 
-        input_l = QHBoxLayout()
         self.r_input = QLineEdit()
         self.i_input = QLineEdit()
         self.r_input.setPlaceholderText("real part")
         self.i_input.setPlaceholderText("imag part")
-        self.r_input.setFixedSize(90 ,35)
-        self.i_input.setFixedSize(90 ,35)
+        self.r_input.setFixedSize(90 ,25)
+        self.i_input.setFixedSize(90 ,25)
         for i in (self.r_input, self.i_input):
-            i.setStyleSheet("color: white; background-color: #333; padding: 10px;")
+            i.setStyleSheet("color: white; background-color: #333;")
         self.r_input.returnPressed.connect(self.apply_custom_c)
         self.i_input.returnPressed.connect(self.apply_custom_c)
-        input_l.addWidget(self.r_input)
-        input_l.addWidget(self.i_input)
+
+        i_row = QHBoxLayout()
+        i_row.addWidget(self.r_input)
+        i_row.addWidget(self.i_input)
 
         self.set_info = QLabel("")
-        self.set_info.setStyleSheet("color: white; padding: 100px")
+        self.set_info.setStyleSheet("color: white; padding: 10px")
+        self.set_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.julia_sets.currentTextChanged.connect(self.update_set_info)
 
-        comboboxes.addWidget(self.set_info)
+        layout.addWidget(self.set_info, 0, 1, 0, 1, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignVCenter)
+        comboboxes.addItem(QSpacerItem(40, 50, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
         comboboxes.addWidget(self.fract_type)
         comboboxes.addWidget(self.julia_sets)
-        comboboxes.addLayout(input_l)
+        comboboxes.addLayout(i_row)
+        comboboxes.addItem(QSpacerItem(40, 50, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+
+        combo_widgets = QWidget()
+        combo_widgets.setLayout(comboboxes)
 
         self.r_input.hide()
         self.i_input.hide()
         self.julia_sets.hide()
         self.set_info.hide()
 
-        layout.addLayout(comboboxes, 1, 0, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum), 1, 0)
+        layout.addWidget(combo_widgets, 1, 1, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum), 1, 2)
 
         if self.fract_type.currentText() == "Julia Set":
             self.fract.is_mandelbrot = False
@@ -120,12 +103,54 @@ class MainFrame(QWidget):
             self.set_info.hide()
             self.r_input.hide()
             self.i_input.hide()
-            self.fract_frame.reset()          
+            self.fract_frame.reset()
 
 
-        controls_text = QLabel("Left-Click to Zoom\nRight-Click to Reset View\nESC to return to this menu")
+        # settings
+        settings = QVBoxLayout()
+        settings.setContentsMargins(8, 0, 8, 0)
+        settings.setSpacing(0)
+        colortext = QLabel("Colormap Style (default: inferno)")
+        colortext.setStyleSheet("color: white; ")
+        self.colorstyle = QLineEdit()
+        self.colorstyle.setStyleSheet("color: white; background-color: #333;")
+        self.colorstyle.setFixedSize(70,20)
+        self.colorstyle.returnPressed.connect(self.change_colormap)
+
+        itertext = QLabel("Iterations (default: 200)")
+        itertext.setStyleSheet("color: white; ")
+        self.iterations = QLineEdit()
+        self.iterations.setStyleSheet("color: white; background-color: #333;")
+        self.iterations.setFixedSize(70,20)
+        self.iterations.returnPressed.connect(self.change_iter)
+
+        settings.addWidget(colortext)
+        settings.addWidget(self.colorstyle)
+        settings.addItem(QSpacerItem(10, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        settings.addWidget(itertext)
+        settings.addWidget(self.iterations)
+
+        settings_container = QWidget()
+        settings_container.setLayout(settings)
+        layout.addWidget(settings_container, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignLeft)
+
+        # button
+        start_btn = QPushButton("Start Rendering")
+        start_btn.setStyleSheet("QPushButton {background-color: white; border-radius: 4px; size: } QPushButton:hover {background-color: #97978f; }")
+        start_btn.setFixedSize(120, 40)
+        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum), 2, 0)
+        layout.addWidget(start_btn, 2, 1, alignment=Qt.AlignmentFlag.AlignCenter)  
+        layout.addItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum), 2, 2)
+
+
+        controls_text = QLabel("Left-Click to Change Zoom Target\nRight-Click to Reset View\nESC to return to this menu")
         controls_text.setStyleSheet("color: white; padding: 6px; ")
-        layout.addWidget(controls_text, 4, 0, alignment=Qt.AlignmentFlag.AlignBottom)
+        layout.addWidget(controls_text, 3, 0, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
+
+        layout.setRowStretch(0, 1)
+        layout.setRowStretch(1, 2)
+        layout.setRowStretch(2, 1) 
+        layout.setRowStretch(3, 1)
 
 
         #self.loading_text = QLabel("")
@@ -139,22 +164,42 @@ class MainFrame(QWidget):
         # when clicked, switch to fractal view
         start_btn.clicked.connect(switch_callback)
 
-    # TODO: DEPRECATED REMOVE LATER
-    def increase_iter(self):
-        if self.fract.ITERATIONS <= 0:
+
+    def change_colormap(self):
+        cm = self.colorstyle.text()
+        if not colormaps.get(cm):
+            self.set_info.setText('Invalid Input')            
+            self.set_info.show()
             return
         
-        self.fract.ITERATIONS -= 10
-        print("Iterations:", self.fract.ITERATIONS)
+        self.fract.COLORMAP = cm
+        self.fract_frame.reset()
+        print('Colormap:', cm)
+
+    def change_iter(self):
+        try:
+            val = int(self.iterations.text())
+            if val < 0:
+                return
+        
+            self.fract.ITERATIONS = val
+            self.fract_frame.reset()
+            print("Iterations:", self.fract.ITERATIONS)
+        except ValueError:
+            self.set_info.setText('Invalid Input')
+            self.set_info.show()
 
     def on_fract_type_change(self, text):
         if text == "Julia Set":
             self.fract.is_mandelbrot = False
             self.julia_sets.show()
+            self.update_set_info(self.julia_sets.currentText())
             self.set_info.show()
             self.fract_frame.reset()
         else:
             self.fract.is_mandelbrot = True
+            self.fract.INTERVAL_ANIM = False
+            self.disable_zoom.show()
             self.julia_sets.hide()
             self.set_info.hide()
             self.r_input.hide()
@@ -168,7 +213,7 @@ class MainFrame(QWidget):
                 self.fract.c_const = complex(0.0, 1.0)
                 self.fract_frame.reset()
             case 'San Marco Dragon':
-                self.set_info.setText("C = -0.75 + 0j\nEdge of the Mandelbrot set")
+                self.set_info.setText("C = -0.75 + 0j Edge of the Mandelbrot set")
                 self.fract.c_const = complex(-0.75, 0)
                 self.fract_frame.reset()
             case "Douady's Rabbit":
@@ -183,11 +228,13 @@ class MainFrame(QWidget):
                 self.set_info.setText("")
         
         if text == 'ANIMATION: [0, 2pi]':
-            self.set_info.setText("z^2 + 0.7885*e^(ia)\nWhere a ranges from [0,2pi]")
+            self.set_info.setText("z^2 + 0.7885*e^(ia) Where a ranges from [0,2pi]")
             self.fract.INTERVAL_ANIM = True
+            self.disable_zoom.hide()
             self.fract_frame.reset()
         else:
             self.fract.INTERVAL_ANIM = False
+            self.disable_zoom.show()
             self.fract_frame.reset()
 
         if text == 'SET: Custom Constant':
@@ -287,10 +334,10 @@ class FractalFrame(QWidget):
             pos = event.position()
             px = float(pos.x())
             py = float(pos.y())
-            px = max(0.0, min(px, self.fract.WIDTH - 1))
-            py = max(0.0, min(py, self.fract.HEIGHT - 1))
-            real = self.x_min + (px / (self.fract.WIDTH - 1)) * (self.x_max - self.x_min)
-            imag = self.y_min + (py / (self.fract.HEIGHT - 1)) * (self.y_max - self.y_min)
+            px = max(0.0, min(px, self.fract.WIDTH))
+            py = max(0.0, min(py, self.fract.HEIGHT))
+            real = self.x_min + (px / self.fract.WIDTH) * (self.x_max - self.x_min)
+            imag = self.y_min + (py / self.fract.HEIGHT) * (self.y_max - self.y_min)
             self.target_real = real
             self.target_imag = imag
             event.accept()
@@ -418,7 +465,7 @@ class UI_Win(QMainWindow):
         self.w, self.h = 900, 700
         self.setFixedSize(self.w, self.h)
         self.setGeometry(950, 500, self.w, self.h)
-        self.setWindowTitle("Fractal Simulation")
+        self.setWindowTitle("Fractal Generator")
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)

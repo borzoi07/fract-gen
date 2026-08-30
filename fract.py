@@ -1,12 +1,13 @@
 from PyQt6.QtGui import QColor, QImage, QPixmap
 from PyQt6.QtCore import QThread, pyqtSignal
 from matplotlib import colormaps
+from math import log10
 import numpy as np
 from numba import njit, prange
 
 def map_colors(arr, colormap='inferno'):
     max_val = arr.max()
-    # normalize to [0, 1]
+    # normalize to [0, 1] interval
     if max_val == 0:
         norm = arr.astype(np.float32)
     else:
@@ -26,17 +27,18 @@ def arr_to_qimage(arr) -> QImage:
 
 class Fract():
     ITERATIONS = 200
-    ZOOM_FACTOR = 0.988
+    ZOOM_FACTOR = 0.99
     ZOOM = True
-    PAN_LERP = 0.05 # default 0.12
+    PAN_LERP = 0.05 # 0.12
     FPS = 30
     F_DELAY = int(1000 / FPS)
     MIRROR_H = False
     INTERVAL_ANIM = False
     SAVE_FRAMES = False
+    COLORMAP = 'inferno'
 
-    x_min_init, x_max_init = -2.0, 2.0
-    y_min_init, y_max_init = -1.5, 1.5
+    x_min_init, x_max_init = -2.0, 2.0 # -2.0, 2.0
+    y_min_init, y_max_init = -1.5, 1.5 # -1.5, 1.5
 
     is_mandelbrot = False
 
@@ -54,9 +56,8 @@ class Fract():
     def mandelbrot(x_min, x_max, y_min, y_max, width, height, iterations, mirror_h):
         arr = np.empty((height, width), dtype=np.int32)
         # linear scaling formula
-        # width and height minus 1 to include the edges of the max boundary [x_min, x_max]
-        dx = (x_max - x_min) / (width - 1)
-        dy = (y_max - y_min) / (height - 1)
+        dx = (x_max - x_min) / width 
+        dy = (y_max - y_min) / height
 
         # run only the row level on separate threads
         # y row can be computed independently so there won't be race conditions
@@ -86,9 +87,8 @@ class Fract():
         arr = np.empty((height, width), dtype=np.int32)
         cR, cI = c_real, c_imag
         # linear scaling formula
-        # width and height minus 1 to include the edges of the max boundary [x_min, x_max]
-        dx = (x_max - x_min) / (width - 1)
-        dy = (y_max - y_min) / (height - 1)
+        dx = (x_max - x_min) / width
+        dy = (y_max - y_min) / height
 
         # run only the row level on separate threads
         # y row can be computed independently so there won't be race conditions
@@ -100,12 +100,12 @@ class Fract():
                 zi = imag
                 iteration = 0
                 for itr in range(iterations):
-                    # z = z*z + c but with explicit arithmetic instead of complex()
+                    # z = z*z + c but with explicit arithmetic instead of using complex()
                     zr2 = zr * zr - zi * zi + cR
                     zi = 2.0 * zr * zi + cI
                     zr = zr2
                     if zr * zr + zi * zi > 4.0: # escape value
-                        iteration = itr
+                        iteration = itr #+ 1 - log10(log10(zr * zr + zi * zi))/log10(2) # color band, but doesn't affect much idk
                         break
                 arr[y, x] = iteration
         
@@ -142,7 +142,7 @@ class Renderer(QThread):
             else:
                 array = self.fract.julia(xm, xM, ym, yM, self.fract.WIDTH, self.fract.HEIGHT, max_it, cr, ci, mirror_h)
 
-            rgb = map_colors(array, colormap='inferno')
+            rgb = map_colors(array, colormap=self.fract.COLORMAP)
 
             self.frame_ready.emit(rgb)
             self.request_render = False
@@ -150,57 +150,3 @@ class Renderer(QThread):
     def stop(self):
         self.running = False
         self.wait()     
-
-
-
-
-
-
-"""
-ITERATIONS = 50
-
-def map_pixel(x, y, width, height):
-    # complex plane window
-    x_min, x_max = -2.0, 1.0
-    y_min, y_max = -1.5, 1.5
-
-    # linear scaling formula
-    real = x_min + (x / width) * (x_max - x_min)
-    imag = y_min + (y / height) * (y_max - y_min)
-
-    return complex(real, imag)
-
-def mandelbrot(x, y, width, height):
-    c = map_pixel(x, y, width, height)
-    z = 0
-    escape_val = 4
-
-    iteration = 0
-    while abs(z) <= escape_val and iteration < ITERATIONS:
-        z = z*z + c
-        iteration += 1
-
-    if iteration == ITERATIONS:
-        color = QColor("black")
-    else:
-        color = QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
-
-    return color
-
-def julia(x, y, width, height, c_real, c_imag):
-    c = complex(c_real, c_imag)
-    z = map_pixel(x, y, width, height)
-    escape_val = 4
-
-    iteration = 0
-    while abs(z) <= escape_val and iteration < ITERATIONS:
-        z = z*z + c
-        iteration += 1
-
-    if iteration == ITERATIONS:
-        color = QColor("black")
-    else:
-        color = QColor(iteration % 8 * 32, iteration % 16 * 16, iteration % 32 * 8)
-
-    return color
-"""
